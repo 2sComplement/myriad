@@ -1,6 +1,7 @@
 ﻿namespace Myriad.Plugins
 
 open FSharp.Compiler.Syntax
+open FSharp.Compiler.Text
 open Myriad.Core
 open Myriad.Core.Ast
 
@@ -16,8 +17,27 @@ module internal Create =
             |> SynType.CreateLongIdent
 
         let varName = "x"
+        let toCamelCase (str: string) =
+            seq {
+                let mutable firstPart = true
+                for i in 0 .. str.Length - 2 ->
+                    // Only first letter is capitalized, e.g. TestProperty -> testProperty
+                    if i = 0 && System.Char.IsLower(str[i + 1]) then 
+                        firstPart <- false
+                        System.Char.ToLowerInvariant(str[i])
+                    // First n letters are capitalized, e.g. DBProperty -> dbProperty
+                    else if firstPart && System.Char.IsUpper(str[i]) && System.Char.IsUpper(str[i + 1]) then
+                        System.Char.ToLowerInvariant(str[i])
+                    // Keep the rest the same
+                    else
+                        if firstPart then firstPart <- false
+                        str[i]
+                yield Seq.last str
+            }
+            |> System.String.Concat
+                
         let pattern =
-            let name = LongIdentWithDots.CreateString fieldName.idText
+            let name = LongIdentWithDots.CreateString <| $"{toCamelCase fieldName.idText}_"
             let arg =
                 let named = SynPat.CreateNamed(Ident.Create varName)
                 SynPat.CreateTyped(named, recordType)
@@ -150,18 +170,29 @@ module internal Create =
 
             let decls = [
                 yield openParent
-                yield! fieldMaps
-                yield create
-                yield map ]
+                yield! fieldMaps ]
+//                yield! fieldMaps 
+//                yield create
+//                yield map ]
 
-            let info = SynComponentInfo.Create recordId
+            let attrs =
+                let ident = LongIdentWithDots ([Ident ("CompilationRepresentation", Range.Zero) ], [])
+                let expr =
+                    let argIdent = LongIdentWithDots.CreateFromLongIdent [ Ident.Create "CompilationRepresentationFlags"; Ident.Create "ModuleSuffix" ]
+                    SynExpr.Paren (SynExpr.CreateLongIdent argIdent, Range.Zero, Some Range.Zero, Range.Zero)
+                SynModuleDecl.CreateAttribute(ident, expr, false)
+                |> List.singleton
+                |> SynAttributeList.Create
+                |> List.singleton
+                
+            let info = SynComponentInfo.Create(recordId, attrs)
             let mdl = SynModuleDecl.CreateNestedModule(info,  decls)
             let fieldsNamespace =
                 config
                 |> Seq.tryPick (fun (n,v) -> if n = "namespace" then Some (v :?> string) else None  )
                 |> Option.defaultValue "UnknownNamespace"
 
-            SynModuleOrNamespace.CreateNamespace(Ident.CreateLong fieldsNamespace, isRecursive = true, decls = [mdl])
+            SynModuleOrNamespace.CreateNamespace(Ident.CreateLong fieldsNamespace, isRecursive = false, decls = [mdl])
         | _ -> failwithf "Not a record type"
 
 [<MyriadGenerator("fields")>]
